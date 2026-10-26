@@ -61,8 +61,95 @@ if (
  // Get all incidents, with optional filters and search
 app.get('/api/incidents', async (req, res) => {
     try {
-        const { status, severity, search } = req.query;
-        
+       const {
+    status,
+    severity,
+    search,
+    page = '1',
+    sort = 'newest',
+    startDate,
+    endDate
+} = req.query;
+
+// Validate page number
+const pageNumber = Number(page);
+
+if (!Number.isInteger(pageNumber) || pageNumber < 1) {
+    return res.status(400).json({
+        message: 'Page must be a positive integer.'
+    });
+}
+
+// Pagination settings
+const limit = 10;
+const offset = (pageNumber - 1) * limit;
+
+// Validate sort option
+const allowedSortOptions = ['newest', 'oldest'];
+
+if (
+    typeof sort !== 'string' ||
+    !allowedSortOptions.includes(sort.toLowerCase())
+) {
+    return res.status(400).json({
+        message: 'Invalid sort option. Use newest or oldest.'
+    });
+}
+
+// Validate date filters
+const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+
+if (startDate && !datePattern.test(startDate)) {
+    return res.status(400).json({
+        message: 'Invalid startDate. Use YYYY-MM-DD format.'
+    });
+}
+
+if (endDate && !datePattern.test(endDate)) {
+    return res.status(400).json({
+        message: 'Invalid endDate. Use YYYY-MM-DD format.'
+    });
+}
+
+// Validate actual calendar dates
+const isValidDate = (date) => {
+    if (!date) return true;
+
+    const parsedDate = new Date(`${date}T00:00:00Z`);
+
+    return !Number.isNaN(parsedDate.getTime()) &&
+        parsedDate.toISOString().startsWith(date);
+};
+
+if (!isValidDate(startDate) || !isValidDate(endDate)) {
+    return res.status(400).json({
+        message: 'Invalid calendar date.'
+    });
+}
+
+// Ensure start date is not after end date
+if (startDate && endDate && startDate > endDate) {
+    return res.status(400).json({
+        message: 'startDate must be before or equal to endDate.'
+    });
+}
+
+// Validate search input
+        if (search !== undefined) {
+            if (typeof search !== 'string' || !search.trim()) {
+                return res.status(400).json({
+                    message: 'Search must not be empty.'
+                });
+            }
+
+            if (search.trim().length > 100) {
+                return res.status(400).json({
+                    message: 'Search must not exceed 100 characters.'
+                });
+            }
+        }
+
+
         // Validate status filter
         const allowedStatuses = ['open', 'in progress', 'resolved'];
 
@@ -86,12 +173,25 @@ app.get('/api/incidents', async (req, res) => {
         const values = [];
 
         if (status) {
-            values.push(status);
+            values.push(status.toLowerCase());
             query += ` AND status = $${values.length}`;
         }
 
+// Filter incidents by date range
+
+if (startDate) {
+    values.push(startDate);
+    query += ` AND created_at >= $${values.length}`;
+}
+
+if (endDate) {
+    values.push(endDate);
+    query += ` AND created_at < ($${values.length}::date + INTERVAL '1 day')`;
+}
+
+
         if (severity) {
-            values.push(severity);
+            values.push(severity.toLowerCase());
             query += ` AND severity = $${values.length}`;
         }
 
@@ -100,11 +200,30 @@ app.get('/api/incidents', async (req, res) => {
             query += ` AND (title ILIKE $${values.length} OR description ILIKE $${values.length})`;
         }
 
-        query += ' ORDER BY created_at DESC';
+const countQuery = query.replace('SELECT *', 'SELECT COUNT(*)');
+const countResult = await pool.query(countQuery, values);
+const total = Number(countResult.rows[0].count);
+const totalPages = Math.ceil(total / limit);
+
+ // Sort incidents by date
+if (sort.toLowerCase() === 'oldest') {
+    query += ' ORDER BY created_at ASC';
+} else {
+    query += ' ORDER BY created_at DESC';
+}
+        values.push(limit, offset);
+        query += ` LIMIT $${values.length - 1} OFFSET $${values.length}`;
 
         const result = await pool.query(query, values);
 
-        res.status(200).json(result.rows);
+        res.status(200).json({
+    page: pageNumber,
+    limit,
+    total,
+    totalPages,
+    incidents: result.rows
+});
+
     } catch (error) {
         console.error('Error fetching incidents:', error.message);
         res.status(500).json({
