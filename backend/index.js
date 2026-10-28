@@ -1,8 +1,14 @@
-
 const express = require('express');
+const cors = require('cors');
 const pool = require('./config/db');
 
 const app = express();
+
+// Allow requests from the React frontend
+app.use(cors({
+    origin: 'http://localhost:3000'
+}));
+
 
 // Allow the server to read JSON data
 app.use(express.json());
